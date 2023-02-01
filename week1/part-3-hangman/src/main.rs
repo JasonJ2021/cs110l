@@ -37,4 +37,46 @@ fn main() {
     // println!("random word: {}", secret_word);
 
     // Your code here! :)
+    let mut guess_word_chars = vec!['-';secret_word.len()];
+    let mut failed_time_lefted = 5;
+    let mut match_times = 0;
+    let mut entered_chars:Vec<char> = Vec::new();
+    println!("Welcome to CS110L Hangman!");
+    while match_times != secret_word.len() && failed_time_lefted >0 {
+        print!("The word so far is ");
+        printCharVec(&guess_word_chars);
+        print!("You have guessed the following letters:");
+        printCharVec(&entered_chars);
+        println!("You have {} guesses left" , failed_time_lefted);
+        print!("Please guess a letter :");
+        io::stdout().flush().expect("Error flushing stdout");
+        let mut guess = String::new();
+        io::stdin().read_line(&mut guess).expect("Error readling line.");
+        let guess_char:Vec<char> = guess.chars().collect();
+        entered_chars.push(guess_char[0]);
+        let flag = match_secret(&secret_word_chars, &mut guess_word_chars, guess_char[0]);
+        if !flag {
+            failed_time_lefted -= 1;
+        }
+        println!();
+    }
+    if match_times != secret_word.len() {
+        println!("Sorry , you ran out of guesses!");
+    }
+}
+fn printCharVec(v : &Vec<char> ){
+    for &c in &(*v) {
+        print!("{}",c);
+    }
+    println!();
+}
+fn match_secret( secret_word_chars : &Vec<char> , guess_word_chars : &mut Vec<char> , c : char ) -> bool {
+    for i in 0..secret_word_chars.len() {
+        if guess_word_chars[i] == '-' && secret_word_chars[i] == c {
+            guess_word_chars[i] = c;
+            return true;
+        }
+    }
+    println!("Sorry , that letter is not in the word");
+    return false;
 }
