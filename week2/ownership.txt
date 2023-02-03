@@ -9,7 +9,7 @@ fn main() {
     println!("{}", ref3.to_uppercase());
 }
 ```
-
+can't compile , because ref3 is invalid in line 9
 
 
 Example 2:
@@ -19,7 +19,7 @@ fn drip_drop() -> &String {
     return &s;
 }
 ```
-
+can't compile , dangling reference
 
 
 Example 3:
@@ -32,3 +32,4 @@ fn main() {
     println!("{}", s2);
 }
 ```
+rust only does shallow copy , so s2 = v[0] move data from vector to s2 , which is prohibited.
