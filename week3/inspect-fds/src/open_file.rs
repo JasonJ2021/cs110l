@@ -68,7 +68,6 @@ impl OpenFile {
     /// * For regular files, this will simply return the supplied path.
     /// * For terminals (files starting with /dev/pts), this will return "<terminal>".
     /// * For pipes (filenames formatted like pipe:[pipenum]), this will return "<pipe #pipenum>".
-    #[allow(unused)] // TODO: delete this line for Milestone 4
     fn path_to_name(path: &str) -> String {
         if path.starts_with("/dev/pts/") {
             String::from("<terminal>")
@@ -134,17 +133,25 @@ impl OpenFile {
     /// program and we don't need to do fine-grained error handling, so returning Option is a
     /// simple way to indicate that "hey, we weren't able to get the necessary information"
     /// without making a big deal of it.)
-    #[allow(unused)] // TODO: delete this line for Milestone 4
     pub fn from_fd(pid: usize, fd: usize) -> Option<OpenFile> {
         // TODO: implement for Milestone 4
-        unimplemented!();
+        let path = format!("/proc/{pid}/fd/{fd}" );
+        let exact_path = fs::read_link(&path).ok()?;
+        let file_name = OpenFile::path_to_name(exact_path.to_str()?);
+        
+        let fdinfo_path = format!("/proc/{pid}/fdinfo/{fd}");
+        let content = fs::read_to_string(fdinfo_path).ok()?;
+
+        let cursor = OpenFile::parse_cursor(&content)?;
+        let mode = OpenFile::parse_access_mode(&content)?;
+        Some(OpenFile::new(file_name, cursor, mode))
     }
 
     /// This function returns the OpenFile's name with ANSI escape codes included to colorize
     /// pipe names. It hashes the pipe name so that the same pipe name will always result in the
     /// same color. This is useful for making program output more readable, since a user can
     /// quickly see all the fds that point to a particular pipe.
-    #[allow(unused)] // TODO: delete this line for Milestone 5
+    #[allow(unused)] // TODO:s delete this line for Milestone 5
     pub fn colorized_name(&self) -> String {
         if self.name.starts_with("<pipe") {
             let mut hash = DefaultHasher::new();

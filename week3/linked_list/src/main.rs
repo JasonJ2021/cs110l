@@ -19,4 +19,16 @@ fn main() {
     //for val in &list {
     //    println!("{}", val);
     //}
+    // Clone traits
+    println!("list now is {}" , list);
+    println!("After Clone======================"); 
+    let list_clone = list.clone();
+    println!("list_clone is {}", list_clone);
+
+    // PartialEq traits
+    println!("list = list_clone ? {} " , list == list_clone);
+
+    for i in list{
+        println!("{}" , i);
+    }
 }
