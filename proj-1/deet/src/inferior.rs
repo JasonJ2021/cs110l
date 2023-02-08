@@ -1,8 +1,16 @@
+use crate::dwarf_data::DwarfData;
+use crate::dwarf_data::Line;
+use crate::inferior;
+use addr2line::gimli::DebugAddrBase;
 use nix::sys::ptrace;
 use nix::sys::signal;
+use nix::sys::signal::Signal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
+use std::convert::TryInto;
+use std::os::unix::process::CommandExt;
 use std::process::Child;
+use std::process::Command;
 
 pub enum Status {
     /// Indicates inferior stopped. Contains the signal that stopped the process, as well as the
@@ -35,11 +43,23 @@ impl Inferior {
     /// an error is encountered.
     pub fn new(target: &str, args: &Vec<String>) -> Option<Inferior> {
         // TODO: implement me!
-        println!(
-            "Inferior::new not implemented! target={}, args={:?}",
-            target, args
-        );
-        None
+        // 1. create a new Command
+        let mut com = Command::new(target);
+        com.args(args);
+        // 2. pre_exec call child_traceme
+        unsafe {
+            com.pre_exec(child_traceme);
+        }
+        let _child = com.spawn().ok()?;
+        let inferior = Inferior { child: _child };
+        match inferior.wait(None).ok()? {
+            Status::Stopped(signal, _) => match signal {
+                Signal::SIGTRAP => Some(()),
+                _ => None,
+            },
+            _ => None,
+        }?;
+        Some(inferior)
     }
 
     /// Returns the pid of this inferior.
@@ -59,5 +79,38 @@ impl Inferior {
             }
             other => panic!("waitpid returned unexpected status: {:?}", other),
         })
+    }
+
+    pub fn continue_exec(&self) -> Result<Status, nix::Error> {
+        // wake up the proc
+        ptrace::cont(self.pid(), None)?;
+        self.wait(None)
+    }
+    pub fn try_kill(&mut self) {
+        if Child::kill(&mut self.child).is_ok() {
+            println!("Killing running inferior (pid {})", self.pid());
+            self.wait(None).unwrap();
+        }
+    }
+    pub fn print_backtrace(&self, debug_data: &DwarfData) -> Result<(), nix::Error> {
+        let mut instruction_ptr: usize = ptrace::getregs(self.pid())?.rip.try_into().unwrap();
+        let mut base_ptr: usize = ptrace::getregs(self.pid())?.rbp.try_into().unwrap();
+        loop {
+            let function_name = debug_data.get_function_from_addr(instruction_ptr).unwrap();
+            let line = debug_data.get_line_from_addr(instruction_ptr).unwrap();
+            println!("{} ({})", function_name, line);
+            if function_name == "main" {
+                break;
+            }
+            instruction_ptr =
+                ptrace::read(self.pid(), (base_ptr + 8) as ptrace::AddressType)? as usize;
+            base_ptr = ptrace::read(self.pid(), base_ptr as ptrace::AddressType)? as usize;
+        }
+        Ok(())
+    }
+    pub fn get_execline(&self, debug_data: &DwarfData) -> Result<Line, nix::Error> {
+        let instruction_ptr: usize = ptrace::getregs(self.pid())?.rip.try_into().unwrap();
+        let line = debug_data.get_line_from_addr(instruction_ptr).unwrap();
+        Ok(line)
     }
 }

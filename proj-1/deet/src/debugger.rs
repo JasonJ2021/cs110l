@@ -1,5 +1,6 @@
 use crate::debugger_command::DebuggerCommand;
-use crate::inferior::Inferior;
+use crate::dwarf_data::{DwarfData, Error as DwarfError};
+use crate::inferior::{self, Inferior};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
 
@@ -8,15 +9,27 @@ pub struct Debugger {
     history_path: String,
     readline: Editor<()>,
     inferior: Option<Inferior>,
+    debug_data: DwarfData,
 }
 
 impl Debugger {
     /// Initializes the debugger.
     pub fn new(target: &str) -> Debugger {
         // TODO (milestone 3): initialize the DwarfData
+        let debug_data = match DwarfData::from_file(target) {
+            Ok(val) => val,
+            Err(DwarfError::ErrorOpeningFile) => {
+                println!("Could not open file {}", target);
+                std::process::exit(1);
+            }
+            Err(DwarfError::DwarfFormatError(err)) => {
+                println!("Could not debugging symbols from {}: {:?}", target, err);
+                std::process::exit(1);
+            }
+        };
 
         let history_path = format!("{}/.deet_history", std::env::var("HOME").unwrap());
-        let mut readline = Editor::<()>::new();
+        let mut readline = Editor::<()>::new().unwrap();
         // Attempt to load history from ~/.deet_history if it exists
         let _ = readline.load_history(&history_path);
 
@@ -25,6 +38,7 @@ impl Debugger {
             history_path,
             readline,
             inferior: None,
+            debug_data,
         }
     }
 
@@ -34,16 +48,70 @@ impl Debugger {
                 DebuggerCommand::Run(args) => {
                     if let Some(inferior) = Inferior::new(&self.target, &args) {
                         // Create the inferior
+                        if self.inferior.is_some() {
+                            let prev_proc = self.inferior.as_mut().unwrap();
+                            prev_proc.try_kill();
+                            self.inferior = None;
+                        }
                         self.inferior = Some(inferior);
                         // TODO (milestone 1): make the inferior run
                         // You may use self.inferior.as_mut().unwrap() to get a mutable reference
                         // to the Inferior object
+                        let inferior = self.inferior.as_mut().unwrap();
+                        let status = inferior.continue_exec().expect("nix::error");
+                        match status {
+                            inferior::Status::Stopped(signal, _) => {
+                                println!("Child stopped (signal {})", signal);
+                                let line = inferior.get_execline(&self.debug_data).ok().unwrap();
+                                println!("Stopped at {}", line);
+                            }
+                            inferior::Status::Exited(code) => {
+                                println!("Child exited (status {})", code)
+                            }
+                            inferior::Status::Signaled(signal) => {
+                                println!("signaled by {}", signal)
+                            }
+                        }
                     } else {
                         println!("Error starting subprocess");
                     }
                 }
                 DebuggerCommand::Quit => {
+                    if self.inferior.is_some() {
+                        let prev_proc = self.inferior.as_mut().unwrap();
+                        prev_proc.try_kill();
+                        self.inferior = None;
+                    }
                     return;
+                }
+                DebuggerCommand::Continue => match &self.inferior {
+                    Some(_) => {
+                        let inferior = self.inferior.as_mut().unwrap();
+                        let status = inferior.continue_exec().expect("nix::error");
+                        match status {
+                            inferior::Status::Stopped(signal, _) => {
+                                println!("Child stopped (signal {})", signal);
+                                let line = inferior.get_execline(&self.debug_data).ok().unwrap();
+                                println!("Stopped at {}", line);
+                            }
+                            inferior::Status::Exited(code) => {
+                                println!("Child exited (status {})", code)
+                            }
+                            inferior::Status::Signaled(signal) => {
+                                println!("signaled by {}", signal)
+                            }
+                        }
+                    }
+                    None => println!("The program is not running currently!"),
+                },
+                DebuggerCommand::BackTrace => {
+                    if self.inferior.is_some() {
+                        self.inferior
+                            .as_ref()
+                            .unwrap()
+                            .print_backtrace(&self.debug_data)
+                            .unwrap();
+                    }
                 }
             }
         }
