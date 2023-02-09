@@ -1,6 +1,13 @@
 #include <stdio.h>
 
-int main() {
-    printf("Hello world!\n");
-    return 0;
+void foo(){
+    printf("Hello World\n");
 }
+
+int main() {
+    int n = 9;
+    while (n--){
+        foo();
+    }
+}
+

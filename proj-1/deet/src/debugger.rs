@@ -3,6 +3,14 @@ use crate::dwarf_data::{DwarfData, Error as DwarfError};
 use crate::inferior::{self, Inferior};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
+use std::collections::HashMap;
+use std::fmt::format;
+
+#[derive(Clone)]
+struct Breakpoint {
+    addr: usize,
+    orig_byte: u8,
+}
 
 pub struct Debugger {
     target: String,
@@ -10,6 +18,7 @@ pub struct Debugger {
     readline: Editor<()>,
     inferior: Option<Inferior>,
     debug_data: DwarfData,
+    breakpoints: HashMap<usize, Option<u8>>,
 }
 
 impl Debugger {
@@ -27,18 +36,18 @@ impl Debugger {
                 std::process::exit(1);
             }
         };
-
         let history_path = format!("{}/.deet_history", std::env::var("HOME").unwrap());
         let mut readline = Editor::<()>::new().unwrap();
         // Attempt to load history from ~/.deet_history if it exists
         let _ = readline.load_history(&history_path);
-
+        debug_data.print();
         Debugger {
             target: target.to_string(),
             history_path,
             readline,
             inferior: None,
-            debug_data,
+            debug_data: debug_data,
+            breakpoints: HashMap::new(),
         }
     }
 
@@ -58,22 +67,43 @@ impl Debugger {
                         // You may use self.inferior.as_mut().unwrap() to get a mutable reference
                         // to the Inferior object
                         let inferior = self.inferior.as_mut().unwrap();
-                        let status = inferior.continue_exec().expect("nix::error");
+                        // inject breakpoints
+                        for (addr, prev_byte) in self.breakpoints.clone() {
+                            // 如果已经插入breakpoints，直接跳过
+                            if prev_byte.is_some() {
+                                continue;
+                            }
+                            let prev_byte = inferior
+                                .write_byte(addr, 0xcc)
+                                .expect("Errors: When setting breakpoint at {breakpoint}");
+                            self.breakpoints.insert(addr, Some(prev_byte));
+                        }
+                        let status = inferior
+                            .continue_exec(&self.breakpoints, &self.debug_data)
+                            .expect("nix::error");
+
                         match status {
-                            inferior::Status::Stopped(signal, _) => {
-                                println!("Child stopped (signal {})", signal);
-                                let line = inferior.get_execline(&self.debug_data).ok().unwrap();
-                                println!("Stopped at {}", line);
+                            inferior::Status::Stopped(signal, rip) => {
+                                let message = format!("Child stopped (signal {})", signal);
+                                Debugger::report_message(&message);
+
+                                let line = self.debug_data.get_line_from_addr(rip);
+                                if let Some(line) = line {
+                                    let message = format!("Stopped at {}", line);
+                                    Debugger::report_message(&message);
+                                }
                             }
                             inferior::Status::Exited(code) => {
-                                println!("Child exited (status {})", code)
+                                let message = format!("Child exited (status {})", code);
+                                Debugger::report_message(&message);
                             }
                             inferior::Status::Signaled(signal) => {
-                                println!("signaled by {}", signal)
+                                let message = format!("signaled by {}", signal);
+                                Debugger::report_message(&message);
                             }
                         }
                     } else {
-                        println!("Error starting subprocess");
+                        Debugger::report_message(&"Error starting subprocess".to_string());
                     }
                 }
                 DebuggerCommand::Quit => {
@@ -87,18 +117,26 @@ impl Debugger {
                 DebuggerCommand::Continue => match &self.inferior {
                     Some(_) => {
                         let inferior = self.inferior.as_mut().unwrap();
-                        let status = inferior.continue_exec().expect("nix::error");
+                        let status = inferior
+                            .continue_exec(&self.breakpoints, &self.debug_data)
+                            .expect("nix::error");
                         match status {
-                            inferior::Status::Stopped(signal, _) => {
-                                println!("Child stopped (signal {})", signal);
-                                let line = inferior.get_execline(&self.debug_data).ok().unwrap();
-                                println!("Stopped at {}", line);
+                            inferior::Status::Stopped(signal, rip) => {
+                                let message = format!("Child stopped (signal {})", signal);
+                                Debugger::report_message(&message);
+                                let line = self.debug_data.get_line_from_addr(rip);
+                                if let Some(line) = line {
+                                    let message = format!("Stopped at {}", line);
+                                    Debugger::report_message(&message);
+                                }
                             }
                             inferior::Status::Exited(code) => {
-                                println!("Child exited (status {})", code)
+                                let message = format!("Child exited (status {})", code);
+                                Debugger::report_message(&message);
                             }
                             inferior::Status::Signaled(signal) => {
-                                println!("signaled by {}", signal)
+                                let message = format!("signaled by {}", signal);
+                                Debugger::report_message(&message);
                             }
                         }
                     }
@@ -113,6 +151,73 @@ impl Debugger {
                             .unwrap();
                     }
                 }
+                DebuggerCommand::Break(mut addr) => {
+                    if addr.starts_with("*0x") {
+                        addr.remove(0);
+                        let addr = Debugger::parse_address(&addr).unwrap();
+                        Debugger::record_breakpoint(addr, &mut self.inferior, &mut self.breakpoints);
+                    }else {
+                        match Debugger::parse_address(&addr) {
+                            Some(addr) => {
+                                // get a line 
+                                if let Some(addr) = self.debug_data.get_addr_for_line(None, addr) {
+                                    Debugger::record_breakpoint(addr, &mut self.inferior, &mut self.breakpoints);
+                                }else{
+                                    let message = format!("No such line {}" , addr);
+                                    Debugger::report_message(&message);
+                                }
+                            }
+                            None => {
+                                if let Some(addr) = self.debug_data.get_addr_for_function(None, &addr){
+                                    // if self.breakpoints.contains_key(&addr) {
+                                    //     // 如果已经插入了这个breakPoints，直接跳过
+                                    //     let message = format!("BreakPoint {:#x} has been added ", addr);
+                                    //     Debugger::report_message(&message);
+                                    // } else {
+                                    //     let message =
+                                    //         format!("Set breakpoint {} at {:#x}", self.breakpoints.len(), addr);
+                                    //     Debugger::report_message(&message);
+                                    //     if self.inferior.is_some() {
+                                    //         let inferior = self.inferior.as_mut().unwrap();
+                                    //         let prev_byte = inferior
+                                    //             .write_byte(addr, 0xcc)
+                                    //             .expect("Errors: When setting breakpoint at {breakpoint}");
+                                    //         self.breakpoints.insert(addr, Some(prev_byte));
+                                    //     } else {
+                                    //         self.breakpoints.insert(addr, None);
+                                    //     }
+                                    // }
+                                    Debugger::record_breakpoint(addr, &mut self.inferior, &mut self.breakpoints);
+                                }else{
+                                    let message = format!("No such function {}" , addr);
+                                    Debugger::report_message(&message);
+                                }
+                            }
+                        }
+                    }
+                    
+                }
+            }
+        }
+    }
+    
+    fn record_breakpoint(addr :usize , inferior : &mut Option<Inferior> , breakpoints : &mut HashMap<usize, Option<u8>> ){
+        if breakpoints.contains_key(&addr) {
+            // 如果已经插入了这个breakPoints，直接跳过
+            let message = format!("BreakPoint {:#x} has been added ", addr);
+            Debugger::report_message(&message);
+        } else {
+            let message =
+                format!("Set breakpoint {} at {:#x}", breakpoints.len(), addr);
+            Debugger::report_message(&message);
+            if inferior.is_some() {
+                let inferior = inferior.as_mut().unwrap();
+                let prev_byte = inferior
+                    .write_byte(addr, 0xcc)
+                    .expect("Errors: When setting breakpoint at {breakpoint}");
+                breakpoints.insert(addr, Some(prev_byte));
+            } else {
+                breakpoints.insert(addr, None);
             }
         }
     }
@@ -156,5 +261,21 @@ impl Debugger {
                 }
             }
         }
+    }
+
+    fn parse_address(addr: &str) -> Option<usize> {
+        let addr_without_0x = if addr.to_lowercase().starts_with("0x") {
+            &addr[2..]
+        } else {
+            &addr
+        };
+        usize::from_str_radix(addr_without_0x, 16).ok()
+    }
+    fn report_message(message: &String) {
+        println!();
+        println!("==================Begin======================");
+        println!("{message}");
+        println!("===================End=======================");
+        println!();
     }
 }

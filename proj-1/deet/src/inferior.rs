@@ -8,10 +8,15 @@ use nix::sys::signal::Signal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
 use std::convert::TryInto;
+use std::mem::size_of;
 use std::os::unix::process::CommandExt;
 use std::process::Child;
 use std::process::Command;
+use std::collections::HashMap;
 
+fn align_addr_to_word(addr: usize) -> usize {
+    addr & (-(size_of::<usize>() as isize) as usize)
+}
 pub enum Status {
     /// Indicates inferior stopped. Contains the signal that stopped the process, as well as the
     /// current instruction pointer that it is stopped at.
@@ -81,8 +86,35 @@ impl Inferior {
         })
     }
 
-    pub fn continue_exec(&self) -> Result<Status, nix::Error> {
+    pub fn continue_exec(&mut self , breakpoints: &HashMap<usize, Option<u8>> , debug_data: &DwarfData) -> Result<Status, nix::Error> {
         // wake up the proc
+        let mut regs = ptrace::getregs(self.pid())?;
+        let rip: usize = regs.rip.try_into().expect("get rip failed");
+        let addr = rip - 1;
+        if breakpoints.contains_key(&addr) {
+            // restore prev_byte
+            self.write_byte(addr, breakpoints.get(&addr).unwrap().expect("breakpoint should been injected"))?;
+            regs.rip = regs.rip - 1;
+            let function_name = debug_data.get_function_from_addr(addr).unwrap();
+            let line = debug_data.get_line_from_addr(addr).unwrap();
+            println!("Breakpoint at {} , {}" , function_name , line);
+            println!("============================================");
+            ptrace::setregs(self.pid(), regs)?;
+            ptrace::step(self.pid(), None)?;
+            match self.wait(None)? {
+                inferior::Status::Stopped(signal, _) => {
+                    assert_eq!(signal , Signal::SIGTRAP);
+                }
+                inferior::Status::Exited(code) => {
+                    println!("Child exited (status {})", code);
+                    return Ok(inferior::Status::Exited(code));  
+                }
+                inferior::Status::Signaled(signal) => {
+                    return Ok(inferior::Status::Signaled(signal));
+                }
+            };
+            self.write_byte(addr, 0xcc)?;
+        }    
         ptrace::cont(self.pid(), None)?;
         self.wait(None)
     }
@@ -112,5 +144,22 @@ impl Inferior {
         let instruction_ptr: usize = ptrace::getregs(self.pid())?.rip.try_into().unwrap();
         let line = debug_data.get_line_from_addr(instruction_ptr).unwrap();
         Ok(line)
+    }
+    pub fn write_byte(&mut self, addr: usize, val: u8) -> Result<u8, nix::Error> {
+        let aligned_addr = align_addr_to_word(addr);
+        let byte_offset = addr - aligned_addr;
+        let word = ptrace::read(self.pid(), aligned_addr as ptrace::AddressType)? as u64;
+        let orig_byte = (word >> 8 * byte_offset) & 0xff;
+        let masked_word = word & !(0xff << 8 * byte_offset);
+        let updated_word = masked_word | ((val as u64) << 8 * byte_offset);
+        unsafe {
+            ptrace::write(
+                self.pid(),
+                aligned_addr as ptrace::AddressType,
+                updated_word as *mut std::ffi::c_void,
+            )?;
+        }
+
+        Ok(orig_byte as u8)
     }
 }
