@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::MutexGuard};
 #[allow(unused_imports)]
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -66,17 +66,40 @@ fn get_input_numbers() -> VecDeque<u32> {
     numbers
 }
 
+fn worker(queue : Arc<Mutex<VecDeque<u32>>>){
+    loop {
+        let num = worker_helper(queue.lock().unwrap());
+        if let Some(num) = num {
+            factor_number(num);
+        }else{
+            break;
+        }
+    }
+}
+
+fn worker_helper(mut deque_ref : MutexGuard<VecDeque<u32>>) -> Option<u32>{
+    deque_ref.pop_front()
+}
+
 fn main() {
     let num_threads = num_cpus::get();
     println!("Farm starting on {} CPUs", num_threads);
     let start = Instant::now();
 
     // TODO: call get_input_numbers() and store a queue of numbers to factor
-
+    let queue = Arc::new(Mutex::new(get_input_numbers()));
+    let mut threads = Vec::new();
     // TODO: spawn `num_threads` threads, each of which pops numbers off the queue and calls
     // factor_number() until the queue is empty
-
+    for _ in 0..num_threads {
+        let queue_ref = queue.clone();
+        threads.push(thread::spawn( move || {
+            worker(queue_ref);
+        }))
+    }
     // TODO: join all the threads you created
-
+    for handle in threads{
+        handle.join().expect("panic occured in thread");
+    }
     println!("Total execution time: {:?}", start.elapsed());
 }
