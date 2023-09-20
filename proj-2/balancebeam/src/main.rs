@@ -107,19 +107,11 @@ async fn main() {
 async fn connect_to_upstream(state: &Arc<ProxyState>) -> Result<TcpStream, std::io::Error> {
     let mut rng = rand::rngs::StdRng::from_entropy();
     let upstream_idx = rng.gen_range(0, state.upstream_addresses.len());
-    log::info!("upstream_idx = {}", upstream_idx);
-    log::info!("upstream_addresses = {:?}", state.upstream_addresses);
     let upstream_ip = &state.upstream_addresses[upstream_idx];
-    log::info!("upstream_ip = {:?}", upstream_ip);
-    let res = TcpStream::connect(upstream_ip).await;
-    log::info!("Come here");
-    log::info!("Come here");
-
-    let ans = res.or_else(|err| {
+    TcpStream::connect(upstream_ip).await.or_else(|err| {
         log::error!("Failed to connect to upstream {}: {}", upstream_ip, err);
         Err(err)
-    });
-    ans
+    })
     // TODO: implement failover (milestone 3)
 }
 
