@@ -90,7 +90,7 @@ async fn main() {
     });
     // let n_workers = 4;
     // let pool = ThreadPool::new(n_workers);
-
+    
     for stream in listener.next().await {
         if let Ok(stream) = stream {
             // Handle the connection!
@@ -98,7 +98,7 @@ async fn main() {
             // pool.execute(move || handle_connection(stream, state_cloned));
             tokio::spawn(async move {
                 // Process each socket concurrently.
-                handle_connection(stream, state_cloned).await
+                handle_connection(stream, state_cloned).await;
             });
         }
     }
@@ -107,6 +107,8 @@ async fn main() {
 async fn connect_to_upstream(state: &Arc<ProxyState>) -> Result<TcpStream, std::io::Error> {
     let mut rng = rand::rngs::StdRng::from_entropy();
     let upstream_idx = rng.gen_range(0, state.upstream_addresses.len());
+    log::info!("upstream_idx = {}", upstream_idx);
+    log::info!("upstream_addresses = {:?}", state.upstream_addresses);
     let upstream_ip = &state.upstream_addresses[upstream_idx];
     TcpStream::connect(upstream_ip).await.or_else(|err| {
         log::error!("Failed to connect to upstream {}: {}", upstream_ip, err);
@@ -141,6 +143,7 @@ async fn handle_connection(mut client_conn: TcpStream, state: Arc<ProxyState>) {
             return;
         }
     };
+
     let upstream_ip = client_conn.peer_addr().unwrap().ip().to_string();
 
     // The client may now send us one or more requests. Keep trying to read requests until the
