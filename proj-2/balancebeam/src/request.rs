@@ -21,6 +21,8 @@ pub enum Error {
     RequestBodyTooLarge,
     /// Encountered an I/O error when reading/writing a TcpStream
     ConnectionError(std::io::Error),
+    /// All upstream servers are in-valid
+    NoValidUpstreamServer,
 }
 
 /// Extracts the Content-Length header value from the provided request. Returns Ok(Some(usize)) if

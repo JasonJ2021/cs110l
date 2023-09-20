@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tokio::{
     net::{TcpListener, TcpStream},
     stream::StreamExt,
+    sync::RwLock,
 };
 
 /// Contains information parsed from the command-line invocation of balancebeam. The Clap macros
@@ -52,6 +53,9 @@ struct ProxyState {
     max_requests_per_minute: usize,
     /// Addresses of servers that we are proxying to
     upstream_addresses: Vec<String>,
+
+    /// Record each server in upstream_addresse's validation
+    valid_upstream_addresses: Vec<String>,
 }
 
 #[tokio::main]
@@ -82,12 +86,13 @@ async fn main() {
     log::info!("Listening for requests on {}", options.bind);
 
     // Handle incoming connections
-    let state = Arc::new(ProxyState {
-        upstream_addresses: options.upstream,
+    let state = Arc::new(RwLock::new(ProxyState {
+        upstream_addresses: options.upstream.clone(),
         active_health_check_interval: options.active_health_check_interval,
         active_health_check_path: options.active_health_check_path,
         max_requests_per_minute: options.max_requests_per_minute,
-    });
+        valid_upstream_addresses: options.upstream,
+    }));
     // let n_workers = 4;
     // let pool = ThreadPool::new(n_workers);
     // 不能用for in next.await...
@@ -104,15 +109,33 @@ async fn main() {
     }
 }
 
-async fn connect_to_upstream(state: &Arc<ProxyState>) -> Result<TcpStream, std::io::Error> {
-    let mut rng = rand::rngs::StdRng::from_entropy();
-    let upstream_idx = rng.gen_range(0, state.upstream_addresses.len());
-    let upstream_ip = &state.upstream_addresses[upstream_idx];
-    TcpStream::connect(upstream_ip).await.or_else(|err| {
-        log::error!("Failed to connect to upstream {}: {}", upstream_ip, err);
-        Err(err)
-    })
-    // TODO: implement failover (milestone 3)
+async fn connect_to_upstream(state: Arc<RwLock<ProxyState>>) -> Result<TcpStream, request::Error> {
+    loop {
+        let state_read = state.read().await;
+        if state_read.valid_upstream_addresses.is_empty() {
+            break Err(request::Error::NoValidUpstreamServer);
+        }
+        let mut rng = rand::rngs::StdRng::from_entropy();
+        let upstream_idx = rng.gen_range(0, state_read.valid_upstream_addresses.len());
+        let upstream_ip = state_read.valid_upstream_addresses[upstream_idx].clone();
+        drop(state_read);
+        match TcpStream::connect(&upstream_ip).await {
+            Ok(stream) => {
+                return Ok(stream);
+            }
+            Err(_) => {
+                let mut proxy_state_write = state.write().await;
+                if let Some(idx) = proxy_state_write
+                    .valid_upstream_addresses
+                    .iter()
+                    .position(|x| *x == upstream_ip)
+                {
+                    proxy_state_write.valid_upstream_addresses.remove(idx);
+                }
+            }
+        };
+        // TODO: implement failover (milestone 3)
+    }
 }
 
 async fn send_response(client_conn: &mut TcpStream, response: &http::Response<Vec<u8>>) {
@@ -128,12 +151,12 @@ async fn send_response(client_conn: &mut TcpStream, response: &http::Response<Ve
     }
 }
 
-async fn handle_connection(mut client_conn: TcpStream, state: Arc<ProxyState>) {
+async fn handle_connection(mut client_conn: TcpStream, state: Arc<RwLock<ProxyState>>) {
     let client_ip = client_conn.peer_addr().unwrap().ip().to_string();
     log::info!("Connection received from {}", client_ip);
 
     // Open a connection to a random destination server
-    let mut upstream_conn = match connect_to_upstream(&state).await {
+    let mut upstream_conn = match connect_to_upstream(Arc::clone(&state)).await {
         Ok(stream) => stream,
         Err(_error) => {
             let response = response::make_http_error(http::StatusCode::BAD_GATEWAY);
@@ -169,6 +192,7 @@ async fn handle_connection(mut client_conn: TcpStream, state: Arc<ProxyState>) {
                     | request::Error::ContentLengthMismatch => http::StatusCode::BAD_REQUEST,
                     request::Error::RequestBodyTooLarge => http::StatusCode::PAYLOAD_TOO_LARGE,
                     request::Error::ConnectionError(_) => http::StatusCode::SERVICE_UNAVAILABLE,
+                    request::Error::NoValidUpstreamServer => unreachable!(),
                 });
                 send_response(&mut client_conn, &response).await;
                 continue;
