@@ -90,8 +90,8 @@ async fn main() {
     });
     // let n_workers = 4;
     // let pool = ThreadPool::new(n_workers);
-    
-    for stream in listener.next().await {
+    // 不能用for in next.await...
+    while let Some(stream) = listener.next().await {
         if let Ok(stream) = stream {
             // Handle the connection!
             let state_cloned = state.clone();
@@ -110,10 +110,16 @@ async fn connect_to_upstream(state: &Arc<ProxyState>) -> Result<TcpStream, std::
     log::info!("upstream_idx = {}", upstream_idx);
     log::info!("upstream_addresses = {:?}", state.upstream_addresses);
     let upstream_ip = &state.upstream_addresses[upstream_idx];
-    TcpStream::connect(upstream_ip).await.or_else(|err| {
+    log::info!("upstream_ip = {:?}", upstream_ip);
+    let res = TcpStream::connect(upstream_ip).await;
+    log::info!("Come here");
+    log::info!("Come here");
+
+    let ans = res.or_else(|err| {
         log::error!("Failed to connect to upstream {}: {}", upstream_ip, err);
         Err(err)
-    })
+    });
+    ans
     // TODO: implement failover (milestone 3)
 }
 
@@ -202,7 +208,8 @@ async fn handle_connection(mut client_conn: TcpStream, state: Arc<ProxyState>) {
         log::debug!("Forwarded request to server");
 
         // Read the server's response
-        let response = match response::read_from_stream(&mut upstream_conn, request.method()).await {
+        let response = match response::read_from_stream(&mut upstream_conn, request.method()).await
+        {
             Ok(response) => response,
             Err(error) => {
                 log::error!("Error reading response from server: {:?}", error);

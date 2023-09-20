@@ -16,7 +16,6 @@ async fn setup() -> (BalanceBeam, EchoServer) {
 async fn test_simple_connections() {
     let (balancebeam, upstream) = setup().await;
     // std::env::set_var("RUST_BACKTRACE", "1");
-    log::info!("Sending a GET request");
     let response_text = balancebeam
         .get("/first_url")
         .await
@@ -47,7 +46,6 @@ async fn test_simple_connections() {
 
 /// Test handling of multiple HTTP requests per connection to the server. Open three concurrent
 /// connections, and send four requests on each.
-#[ignore]
 #[tokio::test]
 async fn test_multiple_requests_per_connection() {
     let num_connections = 3;
